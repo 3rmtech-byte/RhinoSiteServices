@@ -45,4 +45,33 @@ Este repositorio incluye:
 ---
 
 ## 📦 Estructura del proyecto
+/backend
+/src
+/config/init.sql
+/routes/jobs.js
+/routes/units.js
+/routes/photos.js
+/routes/sync.js
+/routes/offline.js
+db.js
+server.js
+package.json
+Dockerfile
 
+/frontend
+/src
+/core/database.js
+/core/api.js
+/core/sync.js
+/core/network.js
+/core/router.js
+/core/utils.js
+/screens/dashboard.js
+/screens/jobs.js
+/css/style.css
+index.html
+sw.js
+Dockerfile
+
+docker-compose.yml
+README.md
