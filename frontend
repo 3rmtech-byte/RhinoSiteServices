@@ -1,0 +1,258 @@
+FROM nginx:alpine
+
+COPY . /usr/share/nginx/html
+
+EXPOSE 80
+
+Frontend/index.html
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Field App</title>
+
+  <link rel="stylesheet" href="css/style.css" />
+
+  <script defer src="src/core/router.js"></script>
+  <script defer src="src/core/network.js"></script>
+  <script defer src="src/core/database.js"></script>
+  <script defer src="src/core/api.js"></script>
+  <script defer src="src/core/sync.js"></script>
+  <script defer src="src/core/utils.js"></script>
+</head>
+
+<body>
+  <header>
+    <h1>Field App</h1>
+    <div id="network-status" class="offline">Offline</div>
+  </header>
+
+  <main id="app"></main>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js");
+    }
+  </script>
+</body>
+</html>
+
+frontend/sw.js (Service Worker)
+const CACHE_NAME = "fieldapp-cache-v1";
+
+const STATIC_ASSETS = [
+  "/",
+  "/index.html",
+  "/css/style.css",
+  "/src/core/router.js",
+  "/src/core/network.js",
+  "/src/core/database.js",
+  "/src/core/api.js",
+  "/src/core/sync.js",
+  "/src/core/utils.js"
+];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+  );
+});
+
+self.addEventListener("fetch", (event) => {
+  event.respondWith(
+    caches.match(event.request).then(
+      (cached) =>
+        cached ||
+        fetch(event.request).catch(() =>
+          new Response("Offline", { status: 503 })
+        )
+    )
+  );
+});
+
+frontend/src/core/database.js (IndexedDB)
+const DB_NAME = "fieldapp-db";
+const DB_VERSION = 1;
+
+let db;
+
+export function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+    req.onupgradeneeded = (e) => {
+      db = e.target.result;
+
+      db.createObjectStore("jobs", { keyPath: "id" });
+      db.createObjectStore("units", { keyPath: "id" });
+      db.createObjectStore("photos", { keyPath: "id" });
+      db.createObjectStore("syncQueue", { keyPath: "id" });
+      db.createObjectStore("offlineResources", { keyPath: "id" });
+    };
+
+    req.onsuccess = (e) => {
+      db = e.target.result;
+      resolve(db);
+    };
+
+    req.onerror = (e) => reject(e);
+  });
+}
+
+export function save(store, data) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).put(data);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = reject;
+  });
+}
+
+export function getAll(store) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = reject;
+  });
+}
+
+frontend/src/core/api.js
+const API_URL = "http://localhost:3000";
+
+export async function apiGet(path) {
+  const res = await fetch(`${API_URL}${path}`);
+  return res.json();
+}
+
+export async function apiPost(path, body) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+export async function apiPatch(path, body) {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+frontend/src/core/network.js
+const statusEl = document.getElementById("network-status");
+
+function updateStatus() {
+  if (navigator.onLine) {
+    statusEl.textContent = "Online";
+    statusEl.className = "online";
+  } else {
+    statusEl.textContent = "Offline";
+    statusEl.className = "offline";
+  }
+}
+
+window.addEventListener("online", updateStatus);
+window.addEventListener("offline", updateStatus);
+
+updateStatus();
+
+frontend/src/core/router.js
+import { renderDashboard } from "../screens/dashboard.js";
+import { renderJobs } from "../screens/jobs.js";
+
+const routes = {
+  "": renderDashboard,
+  "#jobs": renderJobs
+};
+
+function router() {
+  const hash = window.location.hash || "";
+  const screen = routes[hash] || renderDashboard;
+  screen();
+}
+
+window.addEventListener("hashchange", router);
+window.addEventListener("load", router);
+
+frontend/src/core/sync.js
+import { getAll, save } from "./database.js";
+import { apiGet, apiPost } from "./api.js";
+
+export async function sync() {
+  if (!navigator.onLine) return;
+
+  const queue = await getAll("syncQueue");
+
+  if (queue.length) {
+    await apiPost("/sync/push", {
+      jobs: queue.filter((x) => x.type === "job").map((x) => x.data),
+      units: queue.filter((x) => x.type === "unit").map((x) => x.data)
+    });
+  }
+
+  const pull = await apiGet("/sync/pull?last_sync=1970-01-01");
+
+  for (const job of pull.jobs) await save("jobs", job);
+  for (const unit of pull.units) await save("units", unit);
+}
+
+setInterval(sync, 30000);
+
+frontend/src/core/utils.js
+export function toast(msg) {
+  alert(msg);
+}
+
+frontend/screens/dashboard.js
+export function renderDashboard() {
+  document.getElementById("app").innerHTML = `
+    <h2>Dashboard</h2>
+    <a href="#jobs">Ver trabajos</a>
+  `;
+}
+frontend/screens/jobs.js
+import { getAll } from "../core/database.js";
+
+export async function renderJobs() {
+  const jobs = await getAll("jobs");
+
+  document.getElementById("app").innerHTML = `
+    <h2>Trabajos</h2>
+    <ul>
+      ${jobs.map((j) => `<li>${j.cliente} — ${j.estado}</li>`).join("")}
+    </ul>
+  `;
+}
+frontend/css/style.css (versión compacta)
+body {
+  margin: 0;
+  background: #111;
+  color: #eee;
+  font-family: Arial, sans-serif;
+}
+
+header {
+  background: #222;
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+}
+
+#network-status.online {
+  color: #0f0;
+}
+
+#network-status.offline {
+  color: #f00;
+}
+
+main {
+  padding: 20px;
+}
+
