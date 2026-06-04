@@ -1,0 +1,105 @@
+const express = require("express");
+const router = express.Router();
+const { pool } = require("../db");
+
+// PUSH: recibe jobs y units modificados offline
+router.post("/push", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { jobs = [], units = [] } = req.body;
+    await client.query("BEGIN");
+
+    for (const job of jobs) {
+      await client.query(
+        `
+        INSERT INTO jobs (id, tipo_servicio, cliente, direccion, lat, lng, unidad_id, fecha_programada, estado, notas, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT (id) DO UPDATE SET
+          tipo_servicio = EXCLUDED.tipo_servicio,
+          cliente = EXCLUDED.cliente,
+          direccion = EXCLUDED.direccion,
+          lat = EXCLUDED.lat,
+          lng = EXCLUDED.lng,
+          unidad_id = EXCLUDED.unidad_id,
+          fecha_programada = EXCLUDED.fecha_programada,
+          estado = EXCLUDED.estado,
+          notas = EXCLUDED.notas,
+          updated_at = GREATEST(jobs.updated_at, EXCLUDED.updated_at)
+      `,
+        [
+          job.id,
+          job.tipo_servicio,
+          job.cliente,
+          job.direccion,
+          job.lat,
+          job.lng,
+          job.unidad_id,
+          job.fecha_programada,
+          job.estado,
+          job.notas,
+          job.updated_at
+        ]
+      );
+    }
+
+    for (const unit of units) {
+      await client.query(
+        `
+        INSERT INTO units (id, tipo, qr_code, estado, ubicacion_lat, ubicacion_lng, notas, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT (id) DO UPDATE SET
+          tipo = EXCLUDED.tipo,
+          qr_code = EXCLUDED.qr_code,
+          estado = EXCLUDED.estado,
+          ubicacion_lat = EXCLUDED.ubicacion_lat,
+          ubicacion_lng = EXCLUDED.ubicacion_lng,
+          notas = EXCLUDED.notas,
+          updated_at = GREATEST(units.updated_at, EXCLUDED.updated_at)
+      `,
+        [
+          unit.id,
+          unit.tipo,
+          unit.qr_code,
+          unit.estado,
+          unit.ubicacion_lat,
+          unit.ubicacion_lng,
+          unit.notas,
+          unit.updated_at
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Error in sync push" });
+  } finally {
+    client.release();
+  }
+});
+
+// PULL: devuelve cambios desde last_sync
+router.get("/pull", async (req, res) => {
+  try {
+    const { last_sync } = req.query;
+    const since = last_sync || "1970-01-01T00:00:00Z";
+
+    const [jobs, units] = await Promise.all([
+      pool.query("SELECT * FROM jobs WHERE updated_at > $1", [since]),
+      pool.query("SELECT * FROM units WHERE updated_at > $1", [since])
+    ]);
+
+    res.json({
+      jobs: jobs.rows,
+      units: units.rows,
+      server_time: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error in sync pull" });
+  }
+});
+
+module.exports = router;
